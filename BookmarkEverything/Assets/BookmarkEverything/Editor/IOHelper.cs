@@ -97,6 +97,16 @@ namespace BookmarkEverything
             return Directory.Exists(value);
         }
 
+        public static bool IsSceneFile(string value, ExistentialCheckStrategy strategy = ExistentialCheckStrategy.Path)
+        {
+            if (strategy == ExistentialCheckStrategy.GUID)
+            {
+                value = AssetDatabase.GUIDToAssetPath(value);
+            }
+
+            return value != null && Path.GetExtension(value).Contains(".unity");
+        }
+
     }
 public enum ExistentialCheckStrategy // :)
 {

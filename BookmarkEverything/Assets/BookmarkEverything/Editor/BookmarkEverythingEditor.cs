@@ -1,12 +1,17 @@
-﻿using System.Collections.Generic;
+﻿using System;
+using System.Collections.Generic;
 using System.Linq;
+using System.Reflection;
 using UnityEditor;
 using UnityEngine;
 using System.Text;
+using NUnit.Framework;
+using UnityEditor.SceneManagement;
+using Object = UnityEngine.Object;
 
 namespace BookmarkEverything
 {
-	public class BookmarkEverythingEditor : EditorWindow
+    public class BookmarkEverythingEditor : EditorWindow
     {
         private SaveData _currentSettings = new SaveData();
 
@@ -40,9 +45,9 @@ namespace BookmarkEverything
             }
             public EntryData(UnityEngine.Object obj)
             {
-				//use GetAssetPath+AssetPathToGUID instead of TryGetGUIDAndLocalFileIdentifier because that method is fairly new and not supported in many unity editors
-				string path = AssetDatabase.GetAssetPath(obj);
-				string guid = AssetDatabase.AssetPathToGUID(path);
+                //use GetAssetPath+AssetPathToGUID instead of TryGetGUIDAndLocalFileIdentifier because that method is fairly new and not supported in many unity editors
+                string path = AssetDatabase.GetAssetPath(obj);
+                string guid = AssetDatabase.AssetPathToGUID(path);
                 //AssetDatabase.TryGetGUIDAndLocalFileIdentifier(obj, out guid, out localId);
 
                 GUID = guid;
@@ -90,14 +95,16 @@ namespace BookmarkEverything
         {
             public List<EntryData> EntryData = new List<EntryData>();
             public PingTypes PingType;
+            public SceneOpenTypes SceneOpenType;
             public bool VisualMode;
             public bool AutoClose;
             public bool ShowFullPath;
             public bool ShowFullPathForFolders = true;
-            public SaveData(List<EntryData> entryData, PingTypes pingType, bool visualMode, bool autoClose, bool showFullPath, bool showFullPathForFolders)
+            public SaveData(List<EntryData> entryData, PingTypes pingType, SceneOpenTypes sceneOpenType, bool visualMode, bool autoClose, bool showFullPath, bool showFullPathForFolders)
             {
                 EntryData = entryData;
                 PingType = pingType;
+                SceneOpenType = sceneOpenType;
                 VisualMode = visualMode;
                 AutoClose = autoClose;
                 ShowFullPath = showFullPath;
@@ -114,6 +121,7 @@ namespace BookmarkEverything
 
         #region GUI REFERENCES
         GUIStyle _buttonStyle;
+        GUIStyle _boldButtonStyle;
         GUIStyle _textFieldStyle;
         GUIStyle _scrollViewStyle;
         GUIStyle _boxStyle;
@@ -128,10 +136,22 @@ namespace BookmarkEverything
         private List<GUIContent> _projectFinderContents = new List<GUIContent>();
 
         private PingTypes _pingType;
+        private SceneOpenTypes _sceneOpenType;
         private bool _visualMode;
         private bool _autoClose;
         private bool _showFullPath;
         private bool _showFullPathForFolder;
+
+        #region SelectionHistory
+        Vector2 _historyScrollPosition;
+        private Object[] _history;
+        private int _historySize = 50;
+        private Object _lastGameObject;
+        private int _firstId;
+        private int lastId;
+        private int _selectedId;
+        private bool _arrayFull;
+        #endregion
 
         [MenuItem("Window/Bookmark Everything %h")]
         private static void Init()
@@ -141,7 +161,7 @@ namespace BookmarkEverything
             {
                 BookmarkEverythingEditor window = (BookmarkEverythingEditor)GetWindow(typeof(BookmarkEverythingEditor));
                 window.InitInternal();
-                
+
 
             }
             else
@@ -150,10 +170,37 @@ namespace BookmarkEverything
             }
         }
 
-        private void OnEnable() {
-            titleContent =RetrieveGUIContent("Bookmark", "CustomSorting");
+        private void OnInspectorGUI()
+        {
+            Repaint();
+        }
+
+        private void OnEnable()
+        {
+            titleContent = RetrieveGUIContent("Bookmark", "CustomSorting");
             _defaultGUIColor = GUI.color;
-            minSize = new Vector2(400,400);
+            minSize = new Vector2(400, 200);
+
+            // Selection history initilisation
+            if (EditorApplication.hierarchyWindowItemOnGUI == null)
+            {
+                EditorApplication.hierarchyWindowItemOnGUI += OnHierarchyChangeListener;
+            }
+
+            //if (EditorApplication.projectWindowItemOnGUI == null)
+            //{
+            //    EditorApplication.projectWindowItemOnGUI += OnProjectChangeListener;
+            //}
+
+            if (_history == null)
+            {
+                _history = new Object[_historySize];
+                _firstId = _historySize - 1;
+                lastId = 0;
+                _selectedId = _firstId;
+                _arrayFull = false;
+                checkSelection();
+            }
         }
 
         public void InitInternal()
@@ -210,6 +257,7 @@ namespace BookmarkEverything
         /// </summary>
         private void ConstructMainHeaders()
         {
+            _headerContents.Add(RetrieveGUIContent("Selection History", "Grid.Default"));
             _headerContents.Add(RetrieveGUIContent("Project Finder", "UnityEditor.SceneHierarchyWindow"));
             _headerContents.Add(RetrieveGUIContent("Settings", "SettingsIcon"));
         }
@@ -227,21 +275,21 @@ namespace BookmarkEverything
             DrawHeader();
 
             DropAreaGUI();
-            
+
         }
-		//Older versions of Unity doesn't like Close() being called in OnGUI
-		private void Update()
-		{
-			if (_autoClose && _reachedToAsset)
-			{
-				this.Close();
-			}
-			else if (!_autoClose && _reachedToAsset)
-			{
-				_reachedToAsset = false;
-			}
-		}
-		public void DropAreaGUI()
+        //Older versions of Unity doesn't like Close() being called in OnGUI
+        private void Update()
+        {
+            if (_autoClose && _reachedToAsset)
+            {
+                this.Close();
+            }
+            else if (!_autoClose && _reachedToAsset)
+            {
+                _reachedToAsset = false;
+            }
+        }
+        public void DropAreaGUI()
         {
             Event evt = Event.current;
             Rect drop_area = new Rect(0, 0, EditorGUIUtility.currentViewWidth, position.height);
@@ -262,7 +310,7 @@ namespace BookmarkEverything
                         List<EntryData> allowedList = new List<EntryData>();
                         foreach (UnityEngine.Object draggedObject in DragAndDrop.objectReferences)
                         {
-                            if(!AssetDatabase.Contains(draggedObject))
+                            if (!AssetDatabase.Contains(draggedObject))
                             {
                                 EditorUtility.DisplayDialog("Bookmark Everything", "Objects from hierarchy is not supported for now. Would you like me to add that? Please e-mail me at dogukanerkut@gmail.com.", "Okay");
                                 return;
@@ -277,13 +325,13 @@ namespace BookmarkEverything
                                 allowedList.Add(entryData);
                             }
                         }
-                        if(duplicateList.Count > 0)
+                        if (duplicateList.Count > 0)
                         {
                             StringBuilder sb = new StringBuilder();
                             sb.Append("\n\n");
                             for (int i = 0; i < duplicateList.Count; i++)
                             {
-                                sb.Append(string.Format("{0} in {1} Category\n\n",  GetNameForFile(AssetDatabase.GUIDToAssetPath(duplicateList[i].GUID)), duplicateList[i].Category));
+                                sb.Append(string.Format("{0} in {1} Category\n\n", GetNameForFile(AssetDatabase.GUIDToAssetPath(duplicateList[i].GUID)), duplicateList[i].Category));
                             }
 
                             if (EditorUtility.DisplayDialog("Bookmark Everything", string.Format("Duplicate Entries Found: {0} Would you still like to add them ?(Non-duplicates will be added anyway)", sb.ToString()), "Yes", "No"))
@@ -291,12 +339,12 @@ namespace BookmarkEverything
                                 duplicateList.AddRange(allowedList);
                                 for (int i = 0; i < duplicateList.Count; i++)
                                 {
-                                    if (_tabIndex == 0)
+                                    if (_tabIndex == 1)
                                     {
                                         duplicateList[i].Category = GetNameOfCategory(_projectFinderTabIndex);
                                         duplicateList[i].Index = _projectFinderTabIndex;
                                     }
-                                    else if (_tabIndex == 1)
+                                    else if (_tabIndex == 2)
                                     {
                                         duplicateList[i].Category = GetNameOfCategory(0);
                                         duplicateList[i].Index = 0;
@@ -305,11 +353,11 @@ namespace BookmarkEverything
                                     }
                                 }
                                 _tempLocations.AddRange(duplicateList);
-                                if (_tabIndex == 0)
+                                if (_tabIndex == 1)
                                 {
                                     SaveChanges();
                                 }
-                                // else if (_tabIndex == 1)
+                                // else if (_tabIndex == 2)
                                 // {
                                 //     _changesMade = true;
                                 // }
@@ -318,12 +366,12 @@ namespace BookmarkEverything
                             {
                                 for (int i = 0; i < allowedList.Count; i++)
                                 {
-                                    if (_tabIndex == 0)
+                                    if (_tabIndex == 1)
                                     {
                                         allowedList[i].Category = GetNameOfCategory(_projectFinderTabIndex);
                                         allowedList[i].Index = _projectFinderTabIndex;
                                     }
-                                    else if (_tabIndex == 1)
+                                    else if (_tabIndex == 2)
                                     {
                                         allowedList[i].Category = GetNameOfCategory(0);
                                         allowedList[i].Index = 0;
@@ -331,7 +379,7 @@ namespace BookmarkEverything
                                     }
                                 }
                                 _tempLocations.AddRange(allowedList);
-                                if (_tabIndex == 0)
+                                if (_tabIndex == 1)
                                 {
                                     SaveChanges();
                                 }
@@ -341,16 +389,16 @@ namespace BookmarkEverything
                                 // }
                             }
                         }
-                        else if(allowedList.Count > 0)
+                        else if (allowedList.Count > 0)
                         {
                             for (int i = 0; i < allowedList.Count; i++)
                             {
-                                if (_tabIndex == 0)
+                                if (_tabIndex == 1)
                                 {
                                     allowedList[i].Category = GetNameOfCategory(_projectFinderTabIndex);
                                     allowedList[i].Index = _projectFinderTabIndex;
                                 }
-                                else if (_tabIndex == 1)
+                                else if (_tabIndex == 2)
                                 {
                                     allowedList[i].Category = GetNameOfCategory(0);
                                     allowedList[i].Index = 0;
@@ -360,16 +408,16 @@ namespace BookmarkEverything
                             }
 
                             _tempLocations.AddRange(allowedList);
-                            if (_tabIndex == 0)
+                            if (_tabIndex == 1)
                             {
                                 SaveChanges();
                             }
-                            // else if (_tabIndex == 1)
+                            // else if (_tabIndex == 2)
                             // {
                             //     _changesMade = true;
                             // }
                         }
-                       
+
                     }
                     break;
             }
@@ -388,11 +436,13 @@ namespace BookmarkEverything
             {
                 _currentSettings = new SaveData();
                 _currentSettings.PingType = PingTypes.Both;
+                _currentSettings.SceneOpenType = SceneOpenTypes.OpenAdditive;
                 _currentSettings.Save();
             }
             _tempLocations.AddRange(EntryData.Clone(_currentSettings.EntryData.ToArray()));
 
             _pingType = _currentSettings.PingType;
+            _sceneOpenType = _currentSettings.SceneOpenType;
             _visualMode = _currentSettings.VisualMode;
             VisualMode(_visualMode);
             _autoClose = _currentSettings.AutoClose;
@@ -513,9 +563,9 @@ namespace BookmarkEverything
 #if UNITY_5_1
 			Color.TryParseHexString(htmlString, out c);
 #else
-			ColorUtility.TryParseHtmlString(htmlString, out c);
+            ColorUtility.TryParseHtmlString(htmlString, out c);
 #endif
-			t.SetPixel(0, 0, c);
+            t.SetPixel(0, 0, c);
             t.Apply();
             return t;
         }
@@ -530,9 +580,9 @@ namespace BookmarkEverything
 #if UNITY_5_1
 			Color.TryParseHexString(htmlString, out c);
 #else
-			ColorUtility.TryParseHtmlString(htmlString, out c);
+            ColorUtility.TryParseHtmlString(htmlString, out c);
 #endif
-			return c;
+            return c;
         }
 
         private void ConstructStyles()
@@ -549,6 +599,7 @@ namespace BookmarkEverything
             if (visualMode)
             {
                 _buttonStyle = new GUIStyle(EditorStyles.miniButton);
+                _boldButtonStyle = new GUIStyle(EditorStyles.miniButton);
                 _textFieldStyle = new GUIStyle(EditorStyles.textField);
                 _scrollViewStyle = new GUIStyle();
                 _boxStyle = new GUIStyle(EditorStyles.helpBox);
@@ -562,6 +613,13 @@ namespace BookmarkEverything
                 _buttonStyle.active.textColor = CreateColor("#ecf0f1");
                 _buttonStyle.focused.background = CreateColorForEditor("#EACA93");
                 _buttonStyle.alignment = TextAnchor.MiddleLeft;
+
+                _boldButtonStyle.normal.background = CreateColorForEditor("#EACA93");
+                _boldButtonStyle.active.background = CreateColorForEditor("#5A4B31");
+                _boldButtonStyle.active.textColor = CreateColor("#ecf0f1");
+                _boldButtonStyle.focused.background = CreateColorForEditor("#EACA93");
+                _boldButtonStyle.alignment = TextAnchor.MiddleLeft;
+                _boldButtonStyle.fontStyle = FontStyle.Bold;
 
                 _scrollViewStyle.normal.background = CreateColorForEditor("#231703");
 
@@ -580,6 +638,7 @@ namespace BookmarkEverything
             else
             {
                 _buttonStyle = new GUIStyle(EditorStyles.miniButton);
+                _boldButtonStyle = new GUIStyle(EditorStyles.miniButton);
                 _textFieldStyle = new GUIStyle(EditorStyles.textField);
                 _scrollViewStyle = new GUIStyle();
                 _boxStyle = new GUIStyle(EditorStyles.helpBox);
@@ -587,19 +646,22 @@ namespace BookmarkEverything
                 _toolbarButtonStyle = new GUIStyle(EditorStyles.toolbarButton);
 
                 _buttonStyle.alignment = TextAnchor.MiddleLeft;
+                _boldButtonStyle.alignment = TextAnchor.MiddleLeft;
                 _toolbarButtonStyle.alignment = TextAnchor.MiddleLeft;
+
+                _boldButtonStyle.fontStyle = FontStyle.Bold;
             }
         }
-#endregion
-
-        
-
-#endregion
+        #endregion
 
 
-#region ELEMENT DRAWERS
 
-#region GUICONTENT
+        #endregion
+
+
+        #region ELEMENT DRAWERS
+
+        #region GUICONTENT
 
         private GUIContent[] RetrieveGUIContent(string[] entries)
         {
@@ -632,9 +694,9 @@ namespace BookmarkEverything
                 return new GUIContent(name);
             }
         }
-#endregion
+        #endregion
 
-#region BUTTON
+        #region BUTTON
 
         private const float _standardButtonMaxWidth = 25;
         private const float _standardButtonMaxHeight = 18;
@@ -682,10 +744,10 @@ namespace BookmarkEverything
                 case ButtonTypes.Big:
                     options = new GUILayoutOption[] { GUILayout.MaxHeight(_bigButtonMaxHeight) };
                     break;
-                    case ButtonTypes.SmallLongHeight:
-                    options = new GUILayoutOption[]{ GUILayout.MaxHeight(EditorGUIUtility.singleLineHeight + (EditorGUIUtility.singleLineHeight * .5f)), GUILayout.MaxWidth(25) };
+                case ButtonTypes.SmallLongHeight:
+                    options = new GUILayoutOption[] { GUILayout.MaxHeight(EditorGUIUtility.singleLineHeight + (EditorGUIUtility.singleLineHeight * .5f)), GUILayout.MaxWidth(25) };
                     break;
-                    case ButtonTypes.SmallNormalHeight:
+                case ButtonTypes.SmallNormalHeight:
                     options = new GUILayoutOption[] { GUILayout.MaxHeight(_standardButtonMaxHeight), GUILayout.MaxWidth(25) };
                     break;
                 default:
@@ -707,9 +769,9 @@ namespace BookmarkEverything
 
         }
 
-#endregion
+        #endregion
 
-#region READ-ONLY TEXT FIELD
+        #region READ-ONLY TEXT FIELD
 
         void ReadOnlyTextField(string label, string text)
         {
@@ -721,45 +783,117 @@ namespace BookmarkEverything
             EditorGUILayout.EndHorizontal();
         }
 
-#endregion
+        #endregion
 
-#endregion
+        #endregion
 
-#region CONTENT
+        #region CONTENT
 
-#region MAIN HEADER DRAWERS
+        #region MAIN HEADER DRAWERS
 
         private int _tabIndex = 0;
         private void DrawHeader()
         {
             _tabIndex = GUILayout.Toolbar(_tabIndex, _headerContents.ToArray());
-            if (_tabIndex == 0 && _changesMade)
+            if (_tabIndex == 1 && _changesMade)
             {
-                    bool save = EditorUtility.DisplayDialog("Bookmark Everything", "You have unsaved changes. Would you like to save them?", "Yes", "No");
-                    if (save)
-                    {
-                        SaveChanges();
-                    }
-                    else
-                    {
-                        _lastlyAddedCount = -1;
-                        _tempLocations.Clear();
-                        _tempLocations.AddRange(EntryData.Clone(_currentSettings.EntryData.ToArray()));
-                        _changesMade = false;
-                    }
+                bool save = EditorUtility.DisplayDialog("Bookmark Everything", "You have unsaved changes. Would you like to save them?", "Yes", "No");
+                if (save)
+                {
+                    SaveChanges();
+                }
+                else
+                {
+                    _lastlyAddedCount = -1;
+                    _tempLocations.Clear();
+                    _tempLocations.AddRange(EntryData.Clone(_currentSettings.EntryData.ToArray()));
+                    _changesMade = false;
+                }
             }
             switch (_tabIndex)
             {
                 case 0:
-                    DrawProjectFinder();
+                    DrawSelectionHistory();
                     break;
                 case 1:
+                    DrawProjectFinder();
+                    break;
+                case 2:
                     DrawSettings();
                     break;
                 default:
                     break;
             }
         }
+
+        private void DrawSelectionHistory()
+        {
+            EditorGUILayout.BeginHorizontal();
+
+            GUI.enabled = (_selectedId != lastId);
+            if (GUILayout.Button("<<", GUILayout.Width(35)))
+                selectObject(getPreviousId(_selectedId));
+            GUI.enabled = true;
+
+            _historyScrollPosition = EditorGUILayout.BeginScrollView(_historyScrollPosition);
+            int i = _firstId;
+            bool exit = false;
+            while (!exit)
+            {
+                if (_history[i] == null)
+                {
+                    break;
+                }
+
+
+                string path = AssetDatabase.GetAssetPath(_history[i]);
+                bool exists = IOHelper.Exists(path);
+                bool isFolder = IOHelper.IsFolder(path);
+                GUIContent content;
+
+                // In this case if it does not exist we can assume it was a heirachy selection and display a default icon
+                if (exists)
+                {
+                    content = ContentWithIcon(isFolder ? GetNameForFolder(path) : _history[i].name, path);
+                }
+                else
+                {
+                    content = ContentWithIcon(_history[i].name);
+                }
+
+                if (i == _selectedId)
+                {
+                    EditorGUILayout.BeginHorizontal();
+                    GUILayout.Space(EditorGUI.indentLevel * 5);
+                    if (GUILayout.Button(content, _boldButtonStyle, GUILayout.MaxHeight(EditorGUIUtility.singleLineHeight + (EditorGUIUtility.singleLineHeight * .5f))))
+                    {
+                        selectObject(i);
+                    }
+
+                    EditorGUILayout.EndHorizontal();
+                }
+                else
+                {
+                    if (GUILayout.Button(content, _buttonStyle, GUILayout.MaxHeight(EditorGUIUtility.singleLineHeight + (EditorGUIUtility.singleLineHeight * .5f))))
+                    {
+                        selectObject(i);
+                    }
+                }
+
+
+                i = getPreviousId(i);
+                exit = (i == _firstId);
+            }
+            EditorGUILayout.EndScrollView();
+
+            GUI.enabled = (_selectedId != _firstId);
+            if (GUILayout.Button(">>", GUILayout.Width(35)))
+                selectObject(getNextId(_selectedId));
+            GUI.enabled = true;
+
+            EditorGUILayout.EndHorizontal();
+        }
+
         private int _projectFinderTabIndex = 0;
         private bool _visualModeChanged;
         private bool _controlVisualMode;
@@ -802,7 +936,7 @@ namespace BookmarkEverything
         int _objectIndexToBeRemoved = -1;
         private void DrawProjectFinderEntries(string category)
         {
-			bool clicked = false;
+            bool clicked = false;
             _projectFinderEntriesScroll = EditorGUILayout.BeginScrollView(_projectFinderEntriesScroll, _scrollViewStyle, GUILayout.MaxHeight(position.height));
             for (int i = 0; i < _currentSettings.EntryData.Count; i++)
             {
@@ -811,6 +945,7 @@ namespace BookmarkEverything
                     string path = AssetDatabase.GUIDToAssetPath(_currentSettings.EntryData[i].GUID);
                     bool exists = IOHelper.Exists(path);
                     bool isFolder = IOHelper.IsFolder(path);
+                    bool isScenefile = IOHelper.IsSceneFile(path);
                     GUIContent content;
                     if (exists)
                     {
@@ -818,9 +953,12 @@ namespace BookmarkEverything
                     }
                     else
                     {
-                        content = RetrieveGUIContent((isFolder ? GetNameForFolder(path) : GetNameForFile(path)) + "(File is removed, click to remove)" , "console.erroricon.sml");
+                        content = RetrieveGUIContent((isFolder ? GetNameForFolder(path) : GetNameForFile(path)) + "(File is removed, click to remove)", "console.erroricon.sml");
                     }
-                   EditorGUILayout.BeginHorizontal();
+
+
+
+                    EditorGUILayout.BeginHorizontal();
                     if (GUILayout.Button(content, _buttonStyle, GUILayout.MaxHeight(EditorGUIUtility.singleLineHeight + (EditorGUIUtility.singleLineHeight * .5f))))
                     {
                         if (exists)
@@ -843,10 +981,27 @@ namespace BookmarkEverything
                                 {
                                     Selection.activeObject = null;
                                 }
-                                EditorGUIUtility.PingObject(AssetDatabase.LoadMainAssetAtPath(path));
-                                Selection.activeObject = AssetDatabase.LoadMainAssetAtPath(path);
+
+                                if (isFolder)
+                                {
+                                    Selection.activeObject = AssetDatabase.LoadMainAssetAtPath(path);
+
+                                    //attempt to open folder instead of just pinging it
+                                    int folderId = Selection.activeObject.GetInstanceID();
+                                    if (Selection.activeObject)
+                                    {
+                                        Selection.activeObject = null;
+                                    }
+                                    ShowFolderContents(folderId);
+                                }
+                                else
+                                {
+                                    EditorGUIUtility.PingObject(AssetDatabase.LoadMainAssetAtPath(path));
+                                    Selection.activeObject = AssetDatabase.LoadMainAssetAtPath(path);
+                                }
                             }
-							clicked = true;
+
+                            clicked = true;
                         }
                         else
                         {
@@ -854,12 +1009,40 @@ namespace BookmarkEverything
                         }
                         _reachedToAsset = true;
                     }
+
+                    if (isScenefile)
+                    {
+                        switch (_sceneOpenType)
+                        {
+                            case SceneOpenTypes.None:
+                                break;
+                            case SceneOpenTypes.OpenSingle:
+                                if (DrawButton("Open Single", "", ButtonTypes.Standard))
+                                {
+                                    if (AskUserToSaveScenes())
+                                    {
+                                        EditorSceneManager.OpenScene(path, OpenSceneMode.Single);
+                                    }
+                                }
+                                break;
+                            case SceneOpenTypes.OpenAdditive:
+                                if (DrawButton("Open Additive", "", ButtonTypes.Standard))
+                                {
+                                    EditorSceneManager.OpenScene(path, OpenSceneMode.Additive);
+                                }
+                                break;
+                            default:
+                                throw new NotImplementedException("This _sceneOpentType does not exist.");
+                        }
+
+                    }
+
                     if (DrawButton("", "ol minus", ButtonTypes.SmallLongHeight))
                     {
                         _objectIndexToBeRemoved = i;
                     }
-                   EditorGUILayout.EndHorizontal();
-				}
+                    EditorGUILayout.EndHorizontal();
+                }
 
             }
             if (_objectIndexToBeRemovedDueToDeletedAsset != -1)
@@ -868,24 +1051,24 @@ namespace BookmarkEverything
                 _objectIndexToBeRemovedDueToDeletedAsset = -1;
                 SaveChanges();
             }
-            if(_objectIndexToBeRemoved != -1)
+            if (_objectIndexToBeRemoved != -1)
             {
-                 _tempLocations.RemoveAt(_objectIndexToBeRemoved);
+                _tempLocations.RemoveAt(_objectIndexToBeRemoved);
                 _objectIndexToBeRemoved = -1;
                 SaveChanges();
             }
-             if (_currentSettings.EntryData.Count == 0)
+            if (_currentSettings.EntryData.Count == 0)
             {
                 EditorGUILayout.LabelField("You can Drag&Drop assets from Project Folder and easily access them here.", _boldLabelStyle);
             }
             EditorGUILayout.EndScrollView();
-			
-			//Older version of unity has issues with FocusProjectWindow being in the middle of the run(before EndXViews).
-			if (clicked)
-			{
-				EditorUtility.FocusProjectWindow();
-			}
-		}
+
+            //Older version of unity has issues with FocusProjectWindow being in the middle of the run(before EndXViews).
+            if (clicked)
+            {
+                EditorUtility.FocusProjectWindow();
+            }
+        }
 
         Vector2 _settingScrollPos;
         bool _changesMade = false;
@@ -905,7 +1088,7 @@ namespace BookmarkEverything
             for (int i = 0; i < _tempLocations.Count; i++)
             {
                 bool exists = IOHelper.Exists(_tempLocations[i].GUID, ExistentialCheckStrategy.GUID);
-                if (_lastlyAddedCount != -1 && i >= _tempLocations.Count - _lastlyAddedCount -1)
+                if (_lastlyAddedCount != -1 && i >= _tempLocations.Count - _lastlyAddedCount - 1)
                 {
                     GUI.color = Color.green;
                 }
@@ -931,18 +1114,18 @@ namespace BookmarkEverything
                         }
 
                         if (_pingType == PingTypes.Ping)
-                            {
-                                EditorGUIUtility.PingObject(pingedObject);
-                            }
-                            else if (_pingType == PingTypes.Selection)
-                            {
-                                Selection.activeObject = pingedObject;
-                            }
-                            else if (_pingType == PingTypes.Both)
-                            {
-                                EditorGUIUtility.PingObject(pingedObject);
-                                Selection.activeObject = pingedObject;
-                            }
+                        {
+                            EditorGUIUtility.PingObject(pingedObject);
+                        }
+                        else if (_pingType == PingTypes.Selection)
+                        {
+                            Selection.activeObject = pingedObject;
+                        }
+                        else if (_pingType == PingTypes.Both)
+                        {
+                            EditorGUIUtility.PingObject(pingedObject);
+                            Selection.activeObject = pingedObject;
+                        }
                     }
 
                     // if (DrawButton("Assign Selected Object", "TimeLinePingPong", ButtonTypes.Standard))
@@ -964,7 +1147,7 @@ namespace BookmarkEverything
                     _tempLocations[i].Index = EditorGUILayout.Popup(_tempLocations[i].Index, RetrieveGUIContent(_projectFinderHeaders), _popupStyle, GUILayout.MinHeight(EditorGUIUtility.singleLineHeight), GUILayout.MaxWidth(150));
 
                     _tempLocations[i].Category = _projectFinderHeaders[_tempLocations[i].Index];
-                   
+
                     if (!exists)
                     {
                         GUI.enabled = true;
@@ -972,7 +1155,7 @@ namespace BookmarkEverything
                     //Remove Button
                     if (DrawButton("", "ol minus", ButtonTypes.SmallNormalHeight))
                     {
-                        if(_lastlyAddedCount != -1 && i >= _tempLocations.Count - _lastlyAddedCount -1)
+                        if (_lastlyAddedCount != -1 && i >= _tempLocations.Count - _lastlyAddedCount - 1)
                         {
                             _lastlyAddedCount--;
                         }
@@ -986,7 +1169,7 @@ namespace BookmarkEverything
                     GUI.color = _defaultGUIColor;
                 }
             }//endfor
-             if (_tempLocations.Count == 0 && _currentSettings.EntryData.Count == 0)
+            if (_tempLocations.Count == 0 && _currentSettings.EntryData.Count == 0)
             {
                 EditorGUILayout.LabelField("Start dragging some assets from Project Folder!", _boldLabelStyle);
             }
@@ -1020,7 +1203,7 @@ namespace BookmarkEverything
             // }
 
             //Save
-           
+
             //detect if any change occured, if not reverse the HelpBox
             if (_currentSettings.EntryData.Count != _tempLocations.Count)
             {
@@ -1054,11 +1237,11 @@ namespace BookmarkEverything
                     _lastlyAddedCount = -1;
                     _tempLocations.Clear();
                     _tempLocations.AddRange(EntryData.Clone(_currentSettings.EntryData.ToArray()));
-                    _changesMade  = false;
+                    _changesMade = false;
                 }
 
             }
-           
+
         }
 
         private void SaveChanges()
@@ -1070,122 +1253,282 @@ namespace BookmarkEverything
             _currentSettings.Save();
             _changesMade = false;
         }
-#endregion
+        #endregion
 
-#endregion
+        #endregion
 
         private void DrawInnerSettings()
         {
-                EditorGUILayout.BeginVertical(_boxStyle);
+            EditorGUILayout.BeginVertical(_boxStyle);
             EditorGUILayout.LabelField("General Settings", _boldLabelStyle);
             EditorGUILayout.LabelField("", GUI.skin.horizontalSlider);
             EditorGUILayout.BeginHorizontal();
-                string label = "Current Ping Type : ";
-                EditorGUILayout.LabelField(label, GUILayout.MaxWidth(label.Length * 7.3f));
-                if (_pingType == PingTypes.Ping)
+            string label = "Current Ping Type : ";
+            EditorGUILayout.LabelField(label, GUILayout.MaxWidth(label.Length * 7.3f));
+            if (_pingType == PingTypes.Ping)
+            {
+                if (GUILayout.Button("Ping", _buttonStyle, GUILayout.ExpandWidth(false)))
                 {
-                    if (GUILayout.Button("Ping", _buttonStyle, GUILayout.ExpandWidth(false)))
-                    {
-                        _pingType = PingTypes.Selection;
-                        _currentSettings.PingType = _pingType;
-                        _currentSettings.Save();
-                    }
-                }
-                else if (_pingType == PingTypes.Selection)
-                {
-                    if (GUILayout.Button("Selection", _buttonStyle, GUILayout.ExpandWidth(false)))
-                    {
-                        _pingType = PingTypes.Both;
-                        _currentSettings.PingType = _pingType;
-                        _currentSettings.Save();
-                    }
-                }
-                else if (_pingType == PingTypes.Both)
-                {
-                    if (GUILayout.Button("Both", _buttonStyle, GUILayout.ExpandWidth(false)))
-                    {
-                        _pingType = PingTypes.Ping;
-                        _currentSettings.PingType = _pingType;
-                        _currentSettings.Save();
-                    }
-                }
-                EditorGUILayout.EndHorizontal();
-
-                EditorGUILayout.BeginHorizontal();
-                _controlAutoClose = _autoClose;
-                _autoClose = EditorGUILayout.Toggle("Auto Close : ", _autoClose);
-
-                if (_controlAutoClose != _autoClose)
-                {
-                    _autoCloseChanged = true;
-                }
-                if (_autoCloseChanged)
-                {
-                    _currentSettings.AutoClose = _autoClose;
+                    _pingType = PingTypes.Selection;
+                    _currentSettings.PingType = _pingType;
                     _currentSettings.Save();
-                    _autoCloseChanged = false;
                 }
-                EditorGUILayout.EndHorizontal();
-
-
-
-                EditorGUILayout.BeginHorizontal();
-                label = "Show Full Path : ";
-                _controlShowFullPath = _showFullPath;
-                _showFullPath = EditorGUILayout.Toggle(label, _showFullPath);
-
-                if (_controlShowFullPath != _showFullPath)
+            }
+            else if (_pingType == PingTypes.Selection)
+            {
+                if (GUILayout.Button("Selection", _buttonStyle, GUILayout.ExpandWidth(false)))
                 {
-                    _showFullPathChanged = true;
-                }
-                if (_showFullPathChanged)
-                {
-                    _currentSettings.ShowFullPath = _showFullPath;
+                    _pingType = PingTypes.Both;
+                    _currentSettings.PingType = _pingType;
                     _currentSettings.Save();
-                    _showFullPathChanged = false;
                 }
-                
-                EditorGUILayout.EndHorizontal();
-
-                EditorGUILayout.BeginHorizontal();
-                label = "Show Full Path(Folders) : ";
-                _controlShowFullPathForFolder = _showFullPathForFolder;
-                _showFullPathForFolder = EditorGUILayout.Toggle(label, _showFullPathForFolder);
-
-                if (_controlShowFullPathForFolder != _showFullPathForFolder)
+            }
+            else if (_pingType == PingTypes.Both)
+            {
+                if (GUILayout.Button("Both", _buttonStyle, GUILayout.ExpandWidth(false)))
                 {
-                    _showFullPathForFolderChanged = true;
-                }
-                if (_showFullPathForFolderChanged)
-                {
-                    _currentSettings.ShowFullPathForFolders = _showFullPathForFolder;
+                    _pingType = PingTypes.Ping;
+                    _currentSettings.PingType = _pingType;
                     _currentSettings.Save();
-                    _showFullPathForFolderChanged = false;
                 }
+            }
+            EditorGUILayout.EndHorizontal();
 
-                EditorGUILayout.EndHorizontal();
-
-                EditorGUILayout.BeginHorizontal();
-
-                label = "Visual Mode(Experimental!) : ";
-                _controlVisualMode = _visualMode;
-                _visualMode = EditorGUILayout.Toggle(label, _visualMode);
-
-                if (_controlVisualMode != _visualMode)
+            EditorGUILayout.BeginHorizontal();
+            label = "Current Scene Open Type : ";
+            EditorGUILayout.LabelField(label, GUILayout.MaxWidth(label.Length * 7.3f));
+            if (_sceneOpenType == SceneOpenTypes.None)
+            {
+                if (GUILayout.Button("None", _buttonStyle, GUILayout.ExpandWidth(false)))
                 {
-                    _visualModeChanged = true;
-                }
-                if (_visualModeChanged)
-                {
-                    VisualMode(_visualMode);
-                    _currentSettings.VisualMode = _visualMode;
+                    _sceneOpenType = SceneOpenTypes.OpenSingle;
+                    _currentSettings.SceneOpenType = _sceneOpenType;
                     _currentSettings.Save();
-                    _visualModeChanged = false;
+                }
+            }
+            else if (_sceneOpenType == SceneOpenTypes.OpenSingle)
+            {
+                if (GUILayout.Button("Single", _buttonStyle, GUILayout.ExpandWidth(false)))
+                {
+                    _sceneOpenType = SceneOpenTypes.OpenAdditive;
+                    _currentSettings.SceneOpenType = _sceneOpenType;
+                    _currentSettings.Save();
+                }
+            }
+            else if (_sceneOpenType == SceneOpenTypes.OpenAdditive)
+            {
+                if (GUILayout.Button("Addative", _buttonStyle, GUILayout.ExpandWidth(false)))
+                {
+                    _sceneOpenType = SceneOpenTypes.None;
+                    _currentSettings.SceneOpenType = _sceneOpenType;
+                    _currentSettings.Save();
+                }
+            }
+            EditorGUILayout.EndHorizontal();
+
+            EditorGUILayout.BeginHorizontal();
+            _controlAutoClose = _autoClose;
+            _autoClose = EditorGUILayout.Toggle("Auto Close : ", _autoClose);
+
+            if (_controlAutoClose != _autoClose)
+            {
+                _autoCloseChanged = true;
+            }
+            if (_autoCloseChanged)
+            {
+                _currentSettings.AutoClose = _autoClose;
+                _currentSettings.Save();
+                _autoCloseChanged = false;
+            }
+            EditorGUILayout.EndHorizontal();
+
+
+
+            EditorGUILayout.BeginHorizontal();
+            label = "Show Full Path : ";
+            _controlShowFullPath = _showFullPath;
+            _showFullPath = EditorGUILayout.Toggle(label, _showFullPath);
+
+            if (_controlShowFullPath != _showFullPath)
+            {
+                _showFullPathChanged = true;
+            }
+            if (_showFullPathChanged)
+            {
+                _currentSettings.ShowFullPath = _showFullPath;
+                _currentSettings.Save();
+                _showFullPathChanged = false;
+            }
+
+            EditorGUILayout.EndHorizontal();
+
+            EditorGUILayout.BeginHorizontal();
+            label = "Show Full Path(Folders) : ";
+            _controlShowFullPathForFolder = _showFullPathForFolder;
+            _showFullPathForFolder = EditorGUILayout.Toggle(label, _showFullPathForFolder);
+
+            if (_controlShowFullPathForFolder != _showFullPathForFolder)
+            {
+                _showFullPathForFolderChanged = true;
+            }
+            if (_showFullPathForFolderChanged)
+            {
+                _currentSettings.ShowFullPathForFolders = _showFullPathForFolder;
+                _currentSettings.Save();
+                _showFullPathForFolderChanged = false;
+            }
+
+            EditorGUILayout.EndHorizontal();
+
+            EditorGUILayout.BeginHorizontal();
+
+            label = "Visual Mode(Experimental!) : ";
+            _controlVisualMode = _visualMode;
+            _visualMode = EditorGUILayout.Toggle(label, _visualMode);
+
+            if (_controlVisualMode != _visualMode)
+            {
+                _visualModeChanged = true;
+            }
+            if (_visualModeChanged)
+            {
+                VisualMode(_visualMode);
+                _currentSettings.VisualMode = _visualMode;
+                _currentSettings.Save();
+                _visualModeChanged = false;
+            }
+
+            EditorGUILayout.EndHorizontal();
+
+            EditorGUILayout.EndVertical();
+        }
+
+        #region Selection History Functions
+
+
+        void OnHierarchyChangeListener(int instanceID, Rect selectionRect)
+        {
+            checkSelection();
+        }
+
+        //void OnProjectChangeListener(string str, Rect selectionRect)
+        //{
+        //    checkSelection();
+        //}
+
+        void selectObject(int i)
+        {
+            Selection.activeObject = _history[i];
+            _selectedId = i;
+        }
+
+        void checkSelection()
+        {
+            if (Selection.activeObject != null && Selection.activeObject != _lastGameObject && Selection.activeObject != _history[_selectedId])
+            {
+                _lastGameObject = Selection.activeObject;
+                _firstId = getNextId(_firstId);
+                if (_arrayFull == false && _history[_firstId] != null)
+                    _arrayFull = true;
+                _history[_firstId] = _lastGameObject;
+                _selectedId = _firstId;
+                if (_arrayFull)
+                    lastId = getNextId(_firstId);
+            }
+            Repaint();
+        }
+
+        int getNextId(int id)
+        {
+            return ++id == _historySize ? 0 : id;
+        }
+
+        int getPreviousId(int id)
+        {
+            return --id == -1 ? _historySize - 1 : id;
+        }
+
+        #endregion
+
+        #region Show Content Of Folder
+
+        /// <summary>
+        /// Selects a folder in the project window and shows its content.
+        /// Opens a new project window, if none is open yet.
+        /// </summary>
+        /// <param name="folderInstanceID">The instance of the folder asset to open.</param>
+        private void ShowFolderContents(int folderInstanceID)
+        {
+            // Find the internal ProjectBrowser class in the editor assembly.
+            Assembly editorAssembly = typeof(Editor).Assembly;
+            System.Type projectBrowserType = editorAssembly.GetType("UnityEditor.ProjectBrowser");
+
+            // This is the internal method, which performs the desired action.
+            // Should only be called if the project window is in two column mode.
+            MethodInfo showFolderContents = projectBrowserType.GetMethod("ShowFolderContents", BindingFlags.Instance | BindingFlags.NonPublic);
+
+            // Find any open project browser windows.
+            Object[] projectBrowserInstances = Resources.FindObjectsOfTypeAll(projectBrowserType);
+
+            if (projectBrowserInstances.Length > 0)
+            {
+                for (int i = 0; i < projectBrowserInstances.Length; i++)
+                    ShowFolderContentsInternal(projectBrowserInstances[i], showFolderContents, folderInstanceID);
+            }
+            else
+            {
+                EditorWindow projectBrowser = OpenNewProjectBrowser(projectBrowserType);
+                ShowFolderContentsInternal(projectBrowser, showFolderContents, folderInstanceID);
+            }
+        }
+
+        private void ShowFolderContentsInternal(Object projectBrowser, MethodInfo showFolderContents, int folderInstanceID)
+        {
+            // Sadly, there is no method to check for the view mode.
+            // We can use the serialized object to find the private property.
+            SerializedObject serializedObject = new SerializedObject(projectBrowser);
+            bool inTwoColumnMode = serializedObject.FindProperty("m_ViewMode").enumValueIndex == 1;
+
+            if (!inTwoColumnMode)
+            {
+                // If the browser is not in two column mode, we must set it to show the folder contents.
+                MethodInfo setTwoColumns = projectBrowser.GetType().GetMethod("SetTwoColumns", BindingFlags.Instance | BindingFlags.NonPublic);
+                setTwoColumns.Invoke(projectBrowser, null);
+            }
+
+            bool revealAndFrameInFolderTree = true;
+            showFolderContents.Invoke(projectBrowser, new object[] { folderInstanceID, revealAndFrameInFolderTree });
+        }
+
+        private EditorWindow OpenNewProjectBrowser(System.Type projectBrowserType)
+        {
+            EditorWindow projectBrowser = EditorWindow.GetWindow(projectBrowserType);
+            projectBrowser.Show();
+
+            // Unity does some special initialization logic, which we must call,
+            // before we can use the ShowFolderContents method (else we get a NullReferenceException).
+            MethodInfo init = projectBrowserType.GetMethod("Init", BindingFlags.Instance | BindingFlags.Public);
+            init.Invoke(projectBrowser, null);
+
+            return projectBrowser;
+        }
+        #endregion
+
+        private bool AskUserToSaveScenes()
+        {
+            if (!EditorApplication.isPlaying)
+            {
+                // ask the user to save any current work
+                if (!EditorSceneManager.SaveCurrentModifiedScenesIfUserWantsTo())
+                {
+                    this.ShowNotification(new GUIContent("Open scene has been aborted."));
+                    return false; // if the user cancels the save we exit out of the code
                 }
 
-                EditorGUILayout.EndHorizontal();
+                return true;
+            }
 
-                EditorGUILayout.EndVertical();
+            return true;
         }
     }
 }
@@ -1209,4 +1552,11 @@ public enum PingTypes
     Ping,
     Selection,
     Both
+}
+
+public enum SceneOpenTypes
+{
+    None,
+    OpenSingle,
+    OpenAdditive
 }
