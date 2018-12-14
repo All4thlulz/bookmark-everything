@@ -1010,7 +1010,7 @@ namespace BookmarkEverything
                         _reachedToAsset = true;
                     }
 
-                    if (isScenefile)
+                    if (exists && isScenefile)
                     {
                         switch (_sceneOpenType)
                         {
