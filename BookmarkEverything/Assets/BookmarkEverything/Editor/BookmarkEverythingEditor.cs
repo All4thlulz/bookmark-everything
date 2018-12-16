@@ -182,15 +182,7 @@ namespace BookmarkEverything
             minSize = new Vector2(400, 200);
 
             // Selection history initilisation
-            if (EditorApplication.hierarchyWindowItemOnGUI == null)
-            {
-                EditorApplication.hierarchyWindowItemOnGUI += OnHierarchyChangeListener;
-            }
-
-            //if (EditorApplication.projectWindowItemOnGUI == null)
-            //{
-            //    EditorApplication.projectWindowItemOnGUI += OnProjectChangeListener;
-            //}
+			EditorApplication.hierarchyWindowItemOnGUI += OnHierarchyChangeListener;
 
             if (_history == null)
             {
@@ -202,6 +194,11 @@ namespace BookmarkEverything
                 checkSelection();
             }
         }
+		
+		private void OnDestroy()
+		{
+			EditorApplication.hierarchyWindowItemOnGUI -= OnHierarchyChangeListener;
+		}
 
         public void InitInternal()
         {
